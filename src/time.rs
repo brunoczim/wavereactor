@@ -1,30 +1,32 @@
-use std::{cmp::Ordering, fmt, rc::Rc, sync::Arc};
+use std::{cmp::Ordering, rc::Rc, sync::Arc};
+
+use thiserror::Error;
 
 pub type TimeCompatible = f32;
 
 pub type Time = TimeCompatible;
 
-pub type DynTimeFn<'t, A> = dyn TimeFn<Output = A> + 't;
+pub type DynTimeFn<'t, A> = dyn TimeFn<Output = A> + 't + Send + Sync;
 
-pub type SyncDynTimeFn<'t, A> = dyn TimeFn<Output = A> + 't + Send + Sync;
+pub type UnsyncDynTimeFn<'t, A> = dyn TimeFn<Output = A> + 't;
 
 pub trait TimeFn {
     type Output;
 
     fn at(&self, seconds: Time) -> Self::Output;
 
-    fn into_dyn<'t>(self) -> Rc<DynTimeFn<'t, Self::Output>>
-    where
-        Self: Sized + 't,
-    {
-        Rc::new(self)
-    }
-
-    fn into_sync_dyn<'t>(self) -> Arc<SyncDynTimeFn<'t, Self::Output>>
+    fn into_dyn<'t>(self) -> Arc<DynTimeFn<'t, Self::Output>>
     where
         Self: Sized + Send + Sync + 't,
     {
         Arc::new(self)
+    }
+
+    fn into_unsync_dyn<'t>(self) -> Rc<UnsyncDynTimeFn<'t, Self::Output>>
+    where
+        Self: Sized + 't,
+    {
+        Rc::new(self)
     }
 
     fn proxy<F>(self, time_proxy: F) -> Proxy<Self, F>
@@ -352,21 +354,12 @@ impl TimeFn for Log {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum BadSwitchStep {
+    #[error("step point seconds cannot be NaN")]
     Nan,
+    #[error("duplicated step point: {0} seconds")]
     Duplicated(Time),
-}
-
-impl fmt::Display for BadSwitchStep {
-    fn fmt(&self, fmtr: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Nan => write!(fmtr, "step point seconds cannot be NaN"),
-            Self::Duplicated(seconds) => {
-                write!(fmtr, "duplicated step point: {} seconds", seconds)
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -394,7 +387,7 @@ where
     ) -> Result<Self, BadSwitchStep> {
         if at_seconds.is_nan() {
             Err(BadSwitchStep::Nan)
-        }  else {
+        } else {
             match self.search(at_seconds) {
                 Ok(_) => Err(BadSwitchStep::Duplicated(at_seconds)),
                 Err(index) => {
